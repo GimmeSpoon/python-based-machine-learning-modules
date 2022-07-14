@@ -1,3 +1,4 @@
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -135,9 +136,13 @@ dmypy.json
 *.yml
 *.yaml
 *.json
+!example.yml
 
 # test files
 test.*
 
-#data
+# data
 data/
+
+# checkpoints
+*.pt
