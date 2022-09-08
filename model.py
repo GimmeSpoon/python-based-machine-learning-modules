@@ -12,7 +12,6 @@ from tqdm import tqdm
 
 from base import Atts
 
-# todo : Multi GPU support
 __all__ = [
     "TorchParameters",
     "TorchModel",

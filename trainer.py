@@ -11,12 +11,16 @@ from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 
 from model import TorchModel, TorchParameters
 from remote import ClientInfo
 from base import NamedDict, Atts
 
 # todo : remote distribution, visualizing, testing
+
+_local_port = 12345
+
 __all__ = [
     "TrainParameters",
     "TorchTrainer",
@@ -63,6 +67,7 @@ class Slot(object):
 
     def _spawn_process(self, rank:int, size:int, fn:Callable, name, *args, **kwargs) -> None:
         p = mp.Process(target=fn, name=name, args=(rank, size, args), kwargs=kwargs, daemon=True)
+        dist.init_process_group(backend="nccl", init_method="tcp://")
         return p
 
 class Trainer(ABC):
@@ -77,8 +82,6 @@ class Trainer(ABC):
 
 class TorchTrainer(Trainer):
     r"""Trainer supporting pytorch model."""
-    
-    _local_port:Final = 12345
 
     class TorchSimpleSet(Dataset):
         def __init__(self, data:Tensor) -> None:
@@ -224,36 +227,24 @@ class TorchTrainer(Trainer):
     def link(self, p:Slot, model_index:I=None, loader_index:I=None, parm_index:I=None):
         raise NotImplementedError()
         p.model = self.model
-        pass
 
     def all(self, action:str):
         raise NotImplementedError()
-        pass
 
     def train(self, index:I, bar:bool=True, loss_graph:bool=False):
         raise NotImplementedError()
-        pass
 
     def test(self, index:I, bar:bool=True, loss_graph:bool=False):
         raise NotImplementedError()
-        pass
 
     def infer(self, bar:bool=True):
         raise NotImplementedError()
-        pass
 
     def train_n_test(self):
         raise NotImplementedError()
-        pass
 
     def grid_search(self):
         raise NotImplementedError()
-        pass
 
     def kfold(self):
         raise NotImplementedError()
-        pass
-
-# It must be done
-if __name__ is not None:
-    mp.set_start_method("spawn")
