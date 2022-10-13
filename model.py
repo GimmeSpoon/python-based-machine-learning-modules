@@ -1,5 +1,5 @@
 from abc import abstractmethod, ABC
-from typing import Callable, Literal
+from typing import Callable, Union
 
 import pandas as pd
 import numpy as np
@@ -35,6 +35,10 @@ class Model(ABC):
         pass
 
     @abstractmethod
+    def test(self):
+        pass
+
+    @abstractmethod
     def state(self):
         pass
 
@@ -53,7 +57,8 @@ class TorchModel(Model):
             hp:TorchParameters,
             cr:torch.nn.Module,
             opt:torch.optim.Optimizer,
-            sch:torch.optim.lr_scheduler._LRScheduler
+            sch:torch.optim.lr_scheduler._LRScheduler,
+            dev:Union[int, str, torch.device]
         ) -> None:
         super().__init__()
 
@@ -68,106 +73,45 @@ class TorchModel(Model):
         self.opt = opt
         self.sch = sch
 
-        #Training result
-        self.train_s_hook = [] # step_hook
-        self.train_e_hook = [] # epoch_hook
-        self.test_hook = []
-        self.infer_hook = []   # infer_hook
-        self.losses = []
-        self.trained = False
-        self.pred = Tensor()
-        self.target = Tensor()
+        #Environment
+        self.set_device(dev)
 
         #Link
         self.trainer = None
+
+    def set_device(self, dev:Union[int, str, torch.device], place:bool=True) -> None:
+        if isinstance(dev, int) or isinstance(dev, str):
+            self.dev = torch.device(dev)
+        else:
+            self.dev = dev
+        if place:
+            self.net.to(self.dev)
 
     def distributed(fn:Callable) -> Callable:
         def _dist(self:TorchModel, *args, **kwargs):
             self.net = DDP(self.net)
             return fn(self, args, kwargs)
         return _dist
-    
-    def train_step(self, x:Tensor, y:Tensor, device:torch.device) -> Tensor:
-        x, y = x.to(device), y.to(device)
+          
+    def train(self, x:Tensor, y:Tensor) -> Tensor:
         pred = self.net(x)
         loss:Tensor = self.criterion(pred, y)
         self.opt.zero_grad()
         loss.backward()
         self.opt.step()
-        self.__train_step_hook(x, y, pred, loss, self.hp)
         return loss
 
-    def add_hooker(
-            self,
-            time:Literal['s', 'e', 't', 'i'],
-            hook:Callable
-        ) -> None:
-        if time == 's':
-            self.train_s_hook.append(hook)
-        elif time == 'e':
-            self.train_e_hook.append(hook)
-        elif time == 't':
-            self.test_hook.append(hook)
-        elif time == 'i':
-            self.infer_hook.append(hook)
-
-    def __train_step_hook(self, x:Tensor, y:Tensor, pred:Tensor, loss:Tensor, hp:TorchParameters) -> None:
-        for h in self.__train_s_hook:
-            h(x, y, pred, loss, hp)
-
-    def __train_epoch_hook(self, y:Tensor, pred:Tensor, loss:Tensor, hp:TorchParameters) -> None:
-        for h in self.__train_e_hook:
-            h(x, y, pred, loss, hp)
-
-    def train(self, loader:DataLoader, device:torch.device, epoch:int=0, loss:float=0., bar:bool=True):
-        last_epoch = epoch
-        self.net.to(device)
-        self.net.train()
-        for epoch in tqdm(range(epoch, self.hp.epochs), desc='Total', unit='epoch', position=1, leave=False, disable=not bar):
-            loss = 0.0
-            for i, (x, y) in enumerate(tqdm(loader, desc='Batch', postfix={'Loss':'%.5F'%(loss / loader.batch_size)}, leave=False, disable=not bar)):
-                curloss = self.train_step(x, y, device)
-                loss += curloss.item() * len(y) / len(loader)
-            #Log
-            self.losses.append(loss)
-            #Save
-            if epoch % self.checkpoint == self.checkpoint - 1:
-                last_epoch = epoch
-                self.save(epoch+1, self.net.state_dict(), loss, f'{self.net.__class__.__name__}_{epoch+1}.pt')
-            self.sch.step()
-            self.__train_epoch_hook()
-
-        self.trained = True
-        
-        #save after training
-        if last_epoch != epoch:
-            self.save(epoch+1, self.net.state_dict(), loss, f'{self.net.__class__.__name__}_{epoch+1}.pt')
-
-    def test(self, loader:DataLoader, device:torch.device, bar:bool=True)->tuple:
-        self.net.eval()
-        self.net.to(device)
-        with torch.no_grad():
-            for x, y in enumerate(tqdm(loader, disable=not bar)):
-                x, y = x.to(device), y.to(device)
-                output = self.net(x)
-                self.pred = torch.cat([self.pred, output])
-                self.target = torch.cat([self.eval, y])
-        result = (self.pred, self.target)
+    def test(self, x:Tensor, y:Tensor) -> tuple:
+        output = self.net(x)
+        result = (output, y)
         return result
 
-    def infer(self, loader:DataLoader, device:torch.device, bar:bool=True) -> Tensor:
-        self.net.eval()
-        self.net.to(device)
-        output = []
-        with torch.no_grad():
-            for x in enumerate(tqdm(loader, disable=not bar)):
-                x = x.to(device)
-                output.append(self.net(x))
-        return output
+    def infer(self, x:Tensor) -> Tensor:
+        return self.net
 
-    def __state__(self)->dict:
+    def state(self)->dict:
         return {
-            'parm' : self.net.state_dict(),
+            'net' : self.net.state_dict(),
             'opt' : self.opt.state_dict(),
             'sch' : self.sch.state_dict() if self.sch is not None else None,
             'hp' : vars(self.hp)
@@ -175,18 +119,17 @@ class TorchModel(Model):
 
     def save(self, epoch:int, loss:Tensor, fname:str='checkpoint.pt'):
         torch.save({
-            'epoch': epoch,
-            'loss': loss,
-            'net': self.net.state_dict(),
-            'opt': self.opt.state_dict(),
-            'sch': self.sch.state_dict()
+            'net' : self.net.state_dict(),
+            'opt' : self.opt.state_dict(),
+            'sch' : self.sch.state_dict() if self.sch is not None else None,
+            'hp' : vars(self.hp)
         }, fname)
 
     def load(self, path):
         with torch.load(path) as checkpoint:
-            self.net.load_state_dict(checkpoint['parm'])
+            self.net.load_state_dict(checkpoint['net'])
             self.opt.load_state_dict(checkpoint['opt'])
             self.sch.load_state_dict(checkpoint['sch'])
-            return (checkpoint['epoch'], checkpoint['loss'])
+            self.hp.__dict__.update( checkpoint['hp'] )
 
     
